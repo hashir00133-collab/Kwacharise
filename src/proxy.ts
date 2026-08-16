@@ -11,11 +11,24 @@ const memberRoutes = [
   "/ledger",
   "/pairing",
   "/account",
+  "/support",
 ];
 
-const adminRoutes = ["/admin", "/admin/kyc"];
+const adminRoutes = [
+  "/admin",
+  "/admin/kyc",
+  "/admin/support",
+  "/admin/pairing",
+  "/admin/password-reset",
+];
 
-const superAdminRoutes = ["/superadmin", "/superadmin/settings"];
+const superAdminRoutes = [
+  "/superadmin",
+  "/superadmin/settings",
+  "/superadmin/users",
+  "/superadmin/admins",
+  "/superadmin/broadcast",
+];
 
 function routeMatches(pathname: string, routes: string[]) {
   return routes.some(
@@ -81,46 +94,42 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  const needsRoleCheck = isMemberRoute || isAdminRoute || isSuperAdminRoute;
+  const { data: profile, error } = await supabase
+    .from("profiles")
+    .select("role, status")
+    .eq("id", user.id)
+    .single();
 
-  if (needsRoleCheck) {
-    const { data: profile, error } = await supabase
-      .from("profiles")
-      .select("role, status")
-      .eq("id", user.id)
-      .single();
+  if (error || !profile) {
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    loginUrl.searchParams.set("error", "profile_not_found");
+    return NextResponse.redirect(loginUrl);
+  }
 
-    if (error || !profile) {
-      const loginUrl = request.nextUrl.clone();
-      loginUrl.pathname = "/login";
-      loginUrl.searchParams.set("error", "profile_not_found");
-      return NextResponse.redirect(loginUrl);
-    }
+  if (profile.status === "blocked" || profile.status === "suspended") {
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    loginUrl.searchParams.set("error", "account_inactive");
+    return NextResponse.redirect(loginUrl);
+  }
 
-    if (profile.status === "blocked" || profile.status === "suspended") {
-      const loginUrl = request.nextUrl.clone();
-      loginUrl.pathname = "/login";
-      loginUrl.searchParams.set("error", "account_inactive");
-      return NextResponse.redirect(loginUrl);
-    }
+  if (isSuperAdminRoute && profile.role !== "super_admin") {
+    const dashboardUrl = request.nextUrl.clone();
+    dashboardUrl.pathname = "/dashboard";
+    dashboardUrl.search = "";
+    return NextResponse.redirect(dashboardUrl);
+  }
 
-    if (isSuperAdminRoute && profile.role !== "super_admin") {
-      const dashboardUrl = request.nextUrl.clone();
-      dashboardUrl.pathname = "/dashboard";
-      dashboardUrl.search = "";
-      return NextResponse.redirect(dashboardUrl);
-    }
-
-    if (
-      isAdminRoute &&
-      profile.role !== "admin" &&
-      profile.role !== "super_admin"
-    ) {
-      const dashboardUrl = request.nextUrl.clone();
-      dashboardUrl.pathname = "/dashboard";
-      dashboardUrl.search = "";
-      return NextResponse.redirect(dashboardUrl);
-    }
+  if (
+    isAdminRoute &&
+    profile.role !== "admin" &&
+    profile.role !== "super_admin"
+  ) {
+    const dashboardUrl = request.nextUrl.clone();
+    dashboardUrl.pathname = "/dashboard";
+    dashboardUrl.search = "";
+    return NextResponse.redirect(dashboardUrl);
   }
 
   return response;
@@ -137,6 +146,7 @@ export const config = {
     "/ledger/:path*",
     "/pairing/:path*",
     "/account/:path*",
+    "/support/:path*",
     "/admin/:path*",
     "/superadmin/:path*",
   ],

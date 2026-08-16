@@ -4,362 +4,502 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
-type PairingRecord = {
-  id: string;
-  user_id: string;
-  paired_with_user_id: string | null;
-  level: number;
-  pairing_amount: number;
-  status: "waiting" | "matched" | "completed" | "cancelled";
-  notes: string | null;
-  completed_at: string | null;
-  created_at: string;
+type MyPairing = {
+id: string;
+deposit_request_id: string | null;
+withdrawal_request_id: string | null;
+role_in_pairing: string;
+counterparty_name: string | null;
+counterparty_phone: string | null;
+amount: number;
+status: string;
+withdrawal_method: string | null;
+payment_account_name: string | null;
+payment_account_or_wallet: string | null;
+admin_note: string | null;
+created_at: string;
+completed_at: string | null;
 };
 
-type PublicSettings = {
-  minimum_withdrawal: number;
-  pairing_enabled: boolean;
-  whatsapp_notifications_enabled: boolean;
+type ConfirmationResult = {
+success?: boolean;
+pairing_id?: string;
+pairing_status?: string;
+deposit_amount?: number;
+confirmed_amount?: number;
+countdown_started?: boolean;
+maturity_date?: string | null;
 };
 
 export default function PairingPage() {
-  const router = useRouter();
-  const supabase = createClient();
+const router = useRouter();
+const supabase = createClient();
 
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+const [loading, setLoading] = useState(true);
+const [pairings, setPairings] = useState<MyPairing[]>([]);
+const [confirmingPairingId, setConfirmingPairingId] = useState<
+string | null
 
-  const [balance, setBalance] = useState(0);
-  const [pairingEnabled, setPairingEnabled] = useState(false);
-  const [pairings, setPairings] = useState<PairingRecord[]>([]);
+> (null);
 
-  const [level, setLevel] = useState("1");
-  const [amount, setAmount] = useState("");
+const [errorMessage, setErrorMessage] = useState("");
+const [successMessage, setSuccessMessage] = useState("");
+const [copiedValue, setCopiedValue] = useState("");
 
-  const [message, setMessage] = useState("");
-  const [errorMessage, setErrorMessage] = useState("");
+useEffect(() => {
+void loadPairings();
+// eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
 
-  useEffect(() => {
-    loadPairingPage();
-  }, []);
+async function loadPairings(keepMessages = false) {
+setLoading(true);
 
-  async function loadPairingPage() {
-    setLoading(true);
-    setErrorMessage("");
+if (!keepMessages) {
+  setErrorMessage("");
+  setSuccessMessage("");
+}
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+try {
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
 
-    if (!user) {
-      router.push("/login");
-      return;
-    }
-
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("balance")
-      .eq("id", user.id)
-      .single();
-
-    if (profileError) {
-      setErrorMessage(profileError.message);
-      setLoading(false);
-      return;
-    }
-
-    setBalance(Number(profile?.balance || 0));
-
-    const { data: settingsData, error: settingsError } = await supabase
-      .rpc("get_public_system_settings", {})
-      .single();
-
-    if (settingsError) {
-      setErrorMessage(settingsError.message);
-      setLoading(false);
-      return;
-    }
-
-    const settings = settingsData as PublicSettings;
-    setPairingEnabled(Boolean(settings.pairing_enabled));
-
-    await loadPairings(user.id);
-
-    setLoading(false);
+  if (userError || !user) {
+    router.push("/login");
+    return;
   }
 
-  async function loadPairings(userId: string) {
-    const { data, error } = await supabase
-      .from("pairings")
-      .select(
-        "id, user_id, paired_with_user_id, level, pairing_amount, status, notes, completed_at, created_at"
-      )
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false });
+  const { data, error } = await supabase.rpc("get_my_pairings");
 
-    if (error) {
-      setErrorMessage(error.message);
-      return;
-    }
-
-    setPairings((data || []) as PairingRecord[]);
+  if (error) {
+    setErrorMessage(error.message);
+    return;
   }
 
-  async function handleCreatePairing(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  setPairings((data || []) as MyPairing[]);
+} catch {
+  setErrorMessage(
+    "An unexpected error occurred while loading your pairings."
+  );
+} finally {
+  setLoading(false);
+}
 
-    setMessage("");
-    setErrorMessage("");
+}
 
-    const pairingLevel = Number(level);
-    const pairingAmount = Number(amount);
+async function copyValue(value: string | null, label: string) {
+if (!value) {
+return;
+}
 
-    if (!pairingEnabled) {
-      setErrorMessage("Pairing system is currently disabled.");
-      return;
+try {
+  await navigator.clipboard.writeText(value);
+  setCopiedValue(label);
+
+  window.setTimeout(() => {
+    setCopiedValue("");
+  }, 2000);
+} catch {
+  setErrorMessage("The value could not be copied automatically.");
+}
+
+}
+
+async function handleConfirmPaymentReceived(pairing: MyPairing) {
+setErrorMessage("");
+setSuccessMessage("");
+
+if (pairing.role_in_pairing !== "receiver") {
+  setErrorMessage(
+    "Only the withdrawal receiver can confirm that payment was received."
+  );
+  return;
+}
+
+if (pairing.status !== "active") {
+  setErrorMessage("Only an active pairing can be confirmed.");
+  return;
+}
+
+const paymentAmount = Number(pairing.amount || 0).toFixed(2);
+const payerName = pairing.counterparty_name || "the payer";
+
+const confirmed = window.confirm(
+  `Confirm that you have received K${paymentAmount} from ${payerName}?\n\nOnly continue after the payment is visible in your account or wallet.`
+);
+
+if (!confirmed) {
+  return;
+}
+
+setConfirmingPairingId(pairing.id);
+
+try {
+  const { data, error } = await supabase.rpc(
+    "confirm_pairing_payment_received",
+    {
+      p_pairing_id: pairing.id,
     }
+  );
 
-    if (!pairingLevel || pairingLevel < 1) {
-      setErrorMessage("Please enter a valid pairing level.");
-      return;
-    }
-
-    if (!pairingAmount || pairingAmount <= 0) {
-      setErrorMessage("Please enter a valid pairing amount.");
-      return;
-    }
-
-    if (pairingAmount > balance) {
-      setErrorMessage("You do not have enough balance for this pairing request.");
-      return;
-    }
-
-    setSubmitting(true);
-
-    const { error } = await supabase.rpc("create_pairing_request", {
-      p_level: pairingLevel,
-      p_pairing_amount: pairingAmount,
-    });
-
-    setSubmitting(false);
-
-    if (error) {
-      setErrorMessage(error.message);
-      return;
-    }
-
-    setMessage("Pairing request submitted successfully.");
-    setAmount("");
-
-    await loadPairingPage();
+  if (error) {
+    setErrorMessage(error.message);
+    return;
   }
 
-  async function cancelPairing(pairingId: string) {
-    setMessage("");
-    setErrorMessage("");
-    setActionLoadingId(pairingId);
+  const result = (data || {}) as ConfirmationResult;
 
-    const { error } = await supabase.rpc("cancel_my_pairing_request", {
-      p_pairing_id: pairingId,
-    });
+  if (result.countdown_started) {
+    const maturityDate = result.maturity_date
+      ? new Date(result.maturity_date).toLocaleString()
+      : "the configured maturity date";
 
-    setActionLoadingId(null);
-
-    if (error) {
-      setErrorMessage(error.message);
-      return;
-    }
-
-    setMessage("Pairing request cancelled and amount refunded.");
-    await loadPairingPage();
-  }
-
-  function statusBadge(status: string) {
-    if (status === "completed") return "bg-green-500/10 text-green-400";
-    if (status === "matched") return "bg-blue-500/10 text-blue-400";
-    if (status === "cancelled") return "bg-red-500/10 text-red-400";
-    return "bg-yellow-500/10 text-yellow-400";
-  }
-
-  if (loading) {
-    return (
-      <main className="min-h-screen bg-[#07090f] px-6 py-8 text-[#dde2ef]">
-        Loading pairing page...
-      </main>
+    setSuccessMessage(
+      `Payment received successfully. The pairing is complete and the payer's maturity countdown has started. Maturity date: ${maturityDate}.`
+    );
+  } else {
+    setSuccessMessage(
+      "Payment received successfully. This pairing is complete. The payer's countdown will start after the full deposit amount has been confirmed."
     );
   }
 
-  return (
-    <main className="min-h-screen bg-[#07090f] px-6 py-8 text-[#dde2ef]">
-      <div className="mx-auto max-w-4xl">
-        <a
-          href="/dashboard"
-          className="mb-8 inline-block rounded-lg bg-[#172036] px-4 py-2 text-sm text-[#7a9abd]"
-        >
-          ← Back to Dashboard
-        </a>
+  await loadPairings(true);
+} catch {
+  setErrorMessage(
+    "An unexpected error occurred while confirming the payment."
+  );
+} finally {
+  setConfirmingPairingId(null);
+}
 
-        <div className="rounded-2xl border border-[#172036] bg-[#0e1526] p-8">
-          <h1 className="mb-2 text-3xl font-extrabold">Pairing System</h1>
+}
 
-          <p className="mb-6 text-[#7a9abd]">
-            Submit a pairing request. The system will automatically match you
-            with another waiting member using the same level and amount.
-          </p>
+function statusBadge(status: string) {
+if (status === "completed") {
+return "bg-green-500/10 text-green-400";
+}
 
-          <div className="mb-6 grid gap-5 md:grid-cols-2">
-            <div className="rounded-xl border border-[#00b86b33] bg-[#00b86b0a] p-5">
-              <p className="text-sm font-semibold uppercase tracking-wider text-[#4e6880]">
-                Available Balance
-              </p>
-              <p className="mt-2 text-3xl font-extrabold text-[#00b86b]">
-                {balance.toFixed(2)}
-              </p>
-            </div>
+if (status === "cancelled") {
+  return "bg-red-500/10 text-red-400";
+}
 
-            <div className="rounded-xl border border-[#172036] bg-[#0b0f1c] p-5">
-              <p className="text-sm font-semibold uppercase tracking-wider text-[#4e6880]">
-                Pairing Status
-              </p>
-              <p
-                className={
-                  pairingEnabled
-                    ? "mt-2 text-2xl font-bold text-green-400"
-                    : "mt-2 text-2xl font-bold text-red-400"
-                }
-              >
-                {pairingEnabled ? "Enabled" : "Disabled"}
-              </p>
-            </div>
-          </div>
+return "bg-yellow-500/10 text-yellow-400";
 
-          {errorMessage && (
-            <p className="mb-5 rounded-lg bg-red-500/10 px-4 py-3 text-sm text-red-400">
-              {errorMessage}
-            </p>
-          )}
+}
 
-          {message && (
-            <p className="mb-5 rounded-lg bg-green-500/10 px-4 py-3 text-sm text-green-400">
-              {message}
-            </p>
-          )}
+function roleText(role: string) {
+if (role === "payer") {
+return "You are the deposit payer";
+}
 
-          <form onSubmit={handleCreatePairing}>
-            <div className="grid gap-5 md:grid-cols-2">
-              <div>
-                <label className="mb-2 block text-sm font-semibold uppercase tracking-wider text-[#4e6880]">
-                  Pairing Level
-                </label>
-                <input
-                  type="number"
-                  value={level}
-                  onChange={(e) => setLevel(e.target.value)}
-                  placeholder="1"
-                  className="w-full rounded-xl border border-[#172036] bg-[#0b0f1c] px-4 py-3 text-[#dde2ef] outline-none"
-                />
-              </div>
+if (role === "receiver") {
+  return "You are the withdrawal receiver";
+}
 
-              <div>
-                <label className="mb-2 block text-sm font-semibold uppercase tracking-wider text-[#4e6880]">
-                  Pairing Amount
-                </label>
-                <input
-                  type="number"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  placeholder="Example: 50"
-                  className="w-full rounded-xl border border-[#172036] bg-[#0b0f1c] px-4 py-3 text-[#dde2ef] outline-none"
-                />
-              </div>
-            </div>
+return "Pairing member";
 
-            <button
-              type="submit"
-              disabled={submitting || !pairingEnabled}
-              className="mt-6 w-full rounded-xl bg-[#00b86b] px-5 py-3 font-semibold text-white disabled:opacity-60"
-            >
-              {submitting ? "Submitting..." : "Submit Pairing Request →"}
-            </button>
-          </form>
+}
+
+function paymentInstruction(role: string) {
+if (role === "payer") {
+return "Send the paired amount using the receiver's payment details below. The receiver will confirm after the funds arrive.";
+}
+
+
+if (role === "receiver") {
+  return "The payer will use your payment details below. After the full payment arrives, click Payment Received.";
+}
+
+return "Review the pairing and payment information below.";
+
+
+}
+
+if (loading) {
+return ( <main className="min-h-screen bg-[#07090f] px-6 py-8 text-[#dde2ef]">
+Loading pairing page... </main>
+);
+}
+
+const activePairings = pairings.filter(
+(pairing) => pairing.status === "active"
+).length;
+
+const completedPairings = pairings.filter(
+(pairing) => pairing.status === "completed"
+).length;
+
+return ( <main className="min-h-screen bg-[#07090f] px-6 py-8 text-[#dde2ef]"> <div className="mx-auto max-w-5xl"> <a
+       href="/dashboard"
+       className="mb-8 inline-block rounded-lg bg-[#172036] px-4 py-2 text-sm text-[#7a9abd]"
+     >
+← Back to Dashboard </a>
+
+
+    <section className="rounded-2xl border border-[#172036] bg-[#0e1526] p-6 md:p-8">
+      <h1 className="text-3xl font-extrabold">My Pairings</h1>
+
+      <p className="mt-2 text-[#7a9abd]">
+        View payment details, contact your counterparty and confirm received
+        payments.
+      </p>
+
+      {errorMessage && (
+        <p className="mt-6 rounded-lg bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          {errorMessage}
+        </p>
+      )}
+
+      {successMessage && (
+        <p className="mt-6 rounded-lg bg-green-500/10 px-4 py-3 text-sm text-green-400">
+          {successMessage}
+        </p>
+      )}
+
+      {copiedValue && (
+        <p className="mt-6 rounded-lg bg-green-500/10 px-4 py-3 text-sm text-green-400">
+          {copiedValue} copied successfully.
+        </p>
+      )}
+
+      <div className="mt-8 grid gap-5 md:grid-cols-3">
+        <div className="rounded-xl border border-[#172036] bg-[#0b0f1c] p-5">
+          <p className="text-sm text-[#7a9abd]">Total Pairings</p>
+          <p className="mt-2 text-3xl font-extrabold">{pairings.length}</p>
         </div>
 
-        <div className="mt-8 rounded-2xl border border-[#172036] bg-[#0e1526] p-8">
-          <h2 className="text-2xl font-bold">My Pairing Requests</h2>
+        <div className="rounded-xl border border-[#172036] bg-[#0b0f1c] p-5">
+          <p className="text-sm text-[#7a9abd]">Active Pairings</p>
+          <p className="mt-2 text-3xl font-extrabold text-yellow-400">
+            {activePairings}
+          </p>
+        </div>
 
-          <div className="mt-6 overflow-x-auto">
-            <table className="w-full min-w-[800px] border-collapse text-left">
-              <thead>
-                <tr className="border-b border-[#172036] text-sm text-[#4e6880]">
-                  <th className="py-3">Level</th>
-                  <th className="py-3">Amount</th>
-                  <th className="py-3">Status</th>
-                  <th className="py-3">Matched With</th>
-                  <th className="py-3">Notes</th>
-                  <th className="py-3">Date</th>
-                  <th className="py-3">Action</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {pairings.map((pairing) => (
-                  <tr key={pairing.id} className="border-b border-[#172036]">
-                    <td className="py-4 font-bold">{pairing.level}</td>
-                    <td className="py-4">{pairing.pairing_amount}</td>
-
-                    <td className="py-4">
-                      <span
-                        className={`rounded-full px-3 py-1 text-sm ${statusBadge(
-                          pairing.status
-                        )}`}
-                      >
-                        {pairing.status}
-                      </span>
-                    </td>
-
-                    <td className="max-w-[180px] truncate py-4 text-[#7a9abd]">
-                      {pairing.paired_with_user_id || "-"}
-                    </td>
-
-                    <td className="max-w-[220px] truncate py-4 text-[#7a9abd]">
-                      {pairing.notes || "-"}
-                    </td>
-
-                    <td className="py-4 text-[#7a9abd]">
-                      {new Date(pairing.created_at).toLocaleString()}
-                    </td>
-
-                    <td className="py-4">
-                      {pairing.status === "waiting" ? (
-                        <button
-                          onClick={() => cancelPairing(pairing.id)}
-                          disabled={actionLoadingId === pairing.id}
-                          className="rounded-lg bg-red-500/20 px-3 py-2 text-sm font-semibold text-red-400 disabled:opacity-60"
-                        >
-                          {actionLoadingId === pairing.id
-                            ? "Cancelling..."
-                            : "Cancel"}
-                        </button>
-                      ) : (
-                        <span className="text-sm text-[#7a9abd]">-</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-
-                {pairings.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="py-6 text-center text-[#7a9abd]">
-                      No pairing requests yet.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+        <div className="rounded-xl border border-[#172036] bg-[#0b0f1c] p-5">
+          <p className="text-sm text-[#7a9abd]">Completed Pairings</p>
+          <p className="mt-2 text-3xl font-extrabold text-green-400">
+            {completedPairings}
+          </p>
         </div>
       </div>
-    </main>
-  );
+    </section>
+
+    <section className="mt-8 rounded-2xl border border-[#172036] bg-[#0e1526] p-6 md:p-8">
+      <h2 className="text-2xl font-bold">Pairing History</h2>
+
+      <div className="mt-6 space-y-5">
+        {pairings.map((pairing) => {
+          const isReceiver = pairing.role_in_pairing === "receiver";
+          const isPayer = pairing.role_in_pairing === "payer";
+          const isActive = pairing.status === "active";
+          const isCompleted = pairing.status === "completed";
+          const isConfirming = confirmingPairingId === pairing.id;
+
+          return (
+            <div
+              key={pairing.id}
+              className="rounded-xl border border-[#172036] bg-[#0b0f1c] p-5 md:p-6"
+            >
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-wider text-[#4e6880]">
+                    {roleText(pairing.role_in_pairing)}
+                  </p>
+
+                  <h3 className="mt-2 text-xl font-bold">
+                    Amount:{" "}
+                    <span className="text-[#00b86b]">
+                      K{Number(pairing.amount || 0).toFixed(2)}
+                    </span>
+                  </h3>
+
+                  <p className="mt-2 text-[#7a9abd]">
+                    Counterparty:{" "}
+                    <span className="font-semibold text-[#dde2ef]">
+                      {pairing.counterparty_name || "Unknown"}
+                    </span>
+                  </p>
+                </div>
+
+                <span
+                  className={`w-fit rounded-full px-3 py-1 text-sm ${statusBadge(
+                    pairing.status
+                  )}`}
+                >
+                  {pairing.status}
+                </span>
+              </div>
+
+              <p className="mt-5 rounded-lg bg-blue-500/10 px-4 py-3 text-sm text-blue-300">
+                {paymentInstruction(pairing.role_in_pairing)}
+              </p>
+
+              <div className="mt-5 grid gap-4 md:grid-cols-2">
+                <div className="rounded-xl border border-[#172036] bg-[#0e1526] p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-[#4e6880]">
+                    Counterparty Contact Phone
+                  </p>
+
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                    <p className="font-semibold text-[#dde2ef]">
+                      {pairing.counterparty_phone || "Not provided"}
+                    </p>
+
+                    {pairing.counterparty_phone && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          copyValue(
+                            pairing.counterparty_phone,
+                            "Phone number"
+                          )
+                        }
+                        className="rounded-lg bg-[#172036] px-3 py-2 text-xs font-semibold text-[#7a9abd]"
+                      >
+                        Copy
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-[#172036] bg-[#0e1526] p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-[#4e6880]">
+                    Payment Method
+                  </p>
+
+                  <p className="mt-2 font-semibold text-[#dde2ef]">
+                    {pairing.withdrawal_method || "Not provided"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-[#172036] bg-[#0e1526] p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-[#4e6880]">
+                    Payment Account Name
+                  </p>
+
+                  <p className="mt-2 font-semibold text-[#dde2ef]">
+                    {pairing.payment_account_name || "Not provided"}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-[#172036] bg-[#0e1526] p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-[#4e6880]">
+                    Mobile Number / Wallet / Account
+                  </p>
+
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                    <p className="break-all font-semibold text-[#00b86b]">
+                      {pairing.payment_account_or_wallet || "Not provided"}
+                    </p>
+
+                    {pairing.payment_account_or_wallet && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          copyValue(
+                            pairing.payment_account_or_wallet,
+                            "Payment details"
+                          )
+                        }
+                        className="rounded-lg bg-[#172036] px-3 py-2 text-xs font-semibold text-[#7a9abd]"
+                      >
+                        Copy
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {isReceiver && isActive && (
+                <div className="mt-6 rounded-xl border border-[#00b86b55] bg-[#00b86b0a] p-5">
+                  <h4 className="text-lg font-bold text-[#00b86b]">
+                    Have you received the payment?
+                  </h4>
+
+                  <p className="mt-2 text-sm text-[#7a9abd]">
+                    Confirm only after the complete paired amount is visible
+                    in your mobile-money account, bank account or wallet.
+                    This action cannot be reversed.
+                  </p>
+
+                  <button
+                    type="button"
+                    disabled={isConfirming}
+                    onClick={() =>
+                      void handleConfirmPaymentReceived(pairing)
+                    }
+                    className="mt-4 w-full rounded-xl bg-[#00b86b] px-5 py-3 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isConfirming
+                      ? "Confirming Payment..."
+                      : "✓ Payment Received"}
+                  </button>
+                </div>
+              )}
+
+              {isPayer && isActive && (
+                <div className="mt-6 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-5">
+                  <h4 className="font-bold text-yellow-400">
+                    Waiting for receiver confirmation
+                  </h4>
+
+                  <p className="mt-2 text-sm text-[#7a9abd]">
+                    After sending the money, contact the receiver if
+                    necessary. Your maturity countdown starts after the full
+                    deposit amount has been confirmed.
+                  </p>
+                </div>
+              )}
+
+              {isCompleted && (
+                <div className="mt-6 rounded-xl border border-green-500/30 bg-green-500/10 p-5">
+                  <h4 className="font-bold text-green-400">
+                    ✓ Payment confirmed
+                  </h4>
+
+                  <p className="mt-2 text-sm text-[#7a9abd]">
+                    This pairing has been completed and the payment receipt
+                    was confirmed.
+                  </p>
+                </div>
+              )}
+
+              {pairing.admin_note && (
+                <p className="mt-5 text-sm text-[#7a9abd]">
+                  <span className="font-semibold text-[#dde2ef]">
+                    Admin Note:
+                  </span>{" "}
+                  {pairing.admin_note}
+                </p>
+              )}
+
+              <div className="mt-5 grid gap-4 border-t border-[#172036] pt-5 text-sm text-[#7a9abd] md:grid-cols-2">
+                <p>
+                  Created:{" "}
+                  {new Date(pairing.created_at).toLocaleString()}
+                </p>
+
+                <p>
+                  Completed:{" "}
+                  {pairing.completed_at
+                    ? new Date(pairing.completed_at).toLocaleString()
+                    : "-"}
+                </p>
+              </div>
+            </div>
+          );
+        })}
+
+        {pairings.length === 0 && (
+          <div className="rounded-xl border border-[#172036] bg-[#0b0f1c] p-6 text-center text-[#7a9abd]">
+            No pairings found yet.
+          </div>
+        )}
+      </div>
+    </section>
+  </div>
+</main>
+
+);
 }

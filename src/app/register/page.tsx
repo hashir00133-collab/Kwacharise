@@ -13,7 +13,9 @@ export default function RegisterPage() {
   const [phone, setPhone] = useState("");
   const [referralCode, setReferralCode] = useState("");
   const [password, setPassword] = useState("");
+
   const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [notificationOptIn, setNotificationOptIn] = useState(true);
 
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -34,7 +36,13 @@ export default function RegisterPage() {
     setMessage("");
     setErrorMessage("");
 
-    if (!fullName || !email || !phone || !password) {
+    const cleanFullName = fullName.trim();
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPhone = phone.trim();
+    const cleanReferralCode = referralCode.trim();
+    const acceptedTermsAt = new Date().toISOString();
+
+    if (!cleanFullName || !cleanEmail || !cleanPhone || !password) {
       setErrorMessage("Please fill in all required fields.");
       return;
     }
@@ -45,33 +53,59 @@ export default function RegisterPage() {
     }
 
     if (!acceptedTerms) {
-      setErrorMessage("Please accept the Terms & Conditions.");
+      setErrorMessage(
+        "You must agree to the Terms & Conditions before creating an account."
+      );
       return;
     }
 
     setLoading(true);
 
     const { data, error } = await supabase.auth.signUp({
-      email,
+      email: cleanEmail,
       password,
       options: {
         data: {
-          full_name: fullName,
-          phone,
-          referral_code: referralCode.trim() || null,
+          full_name: cleanFullName,
+          phone: cleanPhone,
+          referral_code: cleanReferralCode || null,
+
+          accepted_terms: true,
+          accepted_terms_at: acceptedTermsAt,
+
+          notification_opt_in: notificationOptIn,
+          email_notifications_enabled: notificationOptIn,
+          whatsapp_notifications_enabled: notificationOptIn,
         },
       },
     });
 
-    setLoading(false);
-
     if (error) {
+      setLoading(false);
       setErrorMessage(error.message);
       return;
     }
 
+    if (data.user?.id) {
+      await supabase
+        .from("profiles")
+        .update({
+          full_name: cleanFullName,
+          phone: cleanPhone,
+          accepted_terms: true,
+          accepted_terms_at: acceptedTermsAt,
+          email_notifications_enabled: notificationOptIn,
+          whatsapp_notifications_enabled: notificationOptIn,
+        })
+        .eq("id", data.user.id);
+    }
+
+    setLoading(false);
+
     if (!data.session) {
-      setMessage("Account created. Please check your email to confirm your account.");
+      setMessage(
+        "Account created. Please check your email to confirm your account."
+      );
       return;
     }
 
@@ -159,6 +193,22 @@ export default function RegisterPage() {
               className="mb-4 w-full rounded-xl border border-[#172036] bg-[#0b0f1c] px-4 py-3 text-[#dde2ef] outline-none"
             />
 
+            <label className="mb-4 flex items-start gap-3 rounded-xl border border-[#172036] bg-[#0b0f1c] p-4 text-sm text-[#7a9abd]">
+              <input
+                type="checkbox"
+                checked={notificationOptIn}
+                onChange={(e) => setNotificationOptIn(e.target.checked)}
+                className="mt-1"
+              />
+
+              <span>
+                I agree to receive important account notifications by email and
+                WhatsApp when enabled, including deposit approvals, maturity
+                updates, pairing updates, withdrawal updates, and admin
+                announcements.
+              </span>
+            </label>
+
             <label className="mb-6 flex items-start gap-3 text-sm text-[#7a9abd]">
               <input
                 type="checkbox"
@@ -166,9 +216,18 @@ export default function RegisterPage() {
                 onChange={(e) => setAcceptedTerms(e.target.checked)}
                 className="mt-1"
               />
+
               <span>
-                I confirm I am 18 years or older and agree to the Terms &
-                Conditions.
+                I confirm I am 18 years or older and agree to the{" "}
+                <a
+                  href="/terms"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-[#00b86b] underline"
+                >
+                  Terms & Conditions
+                </a>
+                .
               </span>
             </label>
 

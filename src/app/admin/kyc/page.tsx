@@ -9,6 +9,9 @@ type KycDocument = {
   user_id: string;
   document_type: string;
   file_url: string;
+  identity_file_path: string | null;
+  selfie_file_path: string | null;
+  selfie_photo_url: string | null;
   status: "not_submitted" | "pending" | "approved" | "rejected";
   admin_note: string | null;
   created_at: string;
@@ -33,6 +36,7 @@ export default function AdminKycPage() {
 
   async function checkAdminAndLoadKyc() {
     setLoading(true);
+    setErrorMessage("");
 
     const {
       data: { user },
@@ -65,7 +69,9 @@ export default function AdminKycPage() {
   async function loadKycDocuments() {
     const { data, error } = await supabase
       .from("kyc_documents")
-      .select("id, user_id, document_type, file_url, status, admin_note, created_at")
+      .select(
+        "id, user_id, document_type, file_url, identity_file_path, selfie_file_path, selfie_photo_url, status, admin_note, created_at"
+      )
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -73,14 +79,43 @@ export default function AdminKycPage() {
       return;
     }
 
-    setKycDocuments(data || []);
+    setKycDocuments((data || []) as KycDocument[]);
   }
 
-  async function openKycFile(filePath: string) {
+  async function openIdentityFile(document: KycDocument) {
     setErrorMessage("");
+
+    const filePath = document.identity_file_path || document.file_url;
+
+    if (!filePath) {
+      setErrorMessage("No identity document found for this KYC submission.");
+      return;
+    }
 
     const { data, error } = await supabase.storage
       .from("kyc-documents")
+      .createSignedUrl(filePath, 300);
+
+    if (error) {
+      setErrorMessage(error.message);
+      return;
+    }
+
+    window.open(data.signedUrl, "_blank");
+  }
+
+  async function openSelfieFile(document: KycDocument) {
+    setErrorMessage("");
+
+    const filePath = document.selfie_file_path || document.selfie_photo_url;
+
+    if (!filePath) {
+      setErrorMessage("No selfie photo found for this KYC submission.");
+      return;
+    }
+
+    const { data, error } = await supabase.storage
+      .from("kyc-selfies")
       .createSignedUrl(filePath, 300);
 
     if (error) {
@@ -181,7 +216,7 @@ export default function AdminKycPage() {
           <div className="mb-8 rounded-2xl border border-[#00b86b33] bg-[#00b86b18] p-5">
             <h2 className="font-bold text-[#00b86b]">Admin KYC Panel</h2>
             <p className="mt-2 text-sm text-[#7a9abd]">
-              Review member verification documents.
+              Review member identity documents and selfie photos.
             </p>
           </div>
 
@@ -189,12 +224,27 @@ export default function AdminKycPage() {
             <a href="/admin" className="block rounded-xl px-4 py-3">
               Deposit / Withdrawal Admin
             </a>
+
             <a className="block rounded-xl bg-[#172036] px-4 py-3 text-[#00b86b]">
               KYC Approvals
             </a>
+
+            <a href="/admin/support" className="block rounded-xl px-4 py-3">
+              Support Tickets
+            </a>
+
+            <a href="/admin/pairing" className="block rounded-xl px-4 py-3">
+              Pairing System
+            </a>
+
+            <a href="/admin/password-reset" className="block rounded-xl px-4 py-3">
+              Password Reset
+            </a>
+
             <a href="/dashboard" className="block rounded-xl px-4 py-3">
               Member Dashboard
             </a>
+
             <a href="/superadmin" className="block rounded-xl px-4 py-3">
               Super Admin Dashboard
             </a>
@@ -212,8 +262,10 @@ export default function AdminKycPage() {
           <h1 className="text-4xl font-extrabold lg:text-5xl">
             KYC Approvals
           </h1>
+
           <p className="mt-3 text-lg text-[#7a9abd]">
-            Approve or reject member KYC documents.
+            Approve or reject member KYC submissions after checking both
+            identity document and selfie photo.
           </p>
 
           {errorMessage && (
@@ -245,31 +297,34 @@ export default function AdminKycPage() {
           </div>
 
           <div className="mt-8 rounded-2xl border border-[#172036] bg-[#0e1526] p-6 lg:p-8">
-            <h2 className="text-2xl font-bold">Pending KYC Documents</h2>
+            <h2 className="text-2xl font-bold">Pending KYC Submissions</h2>
+
             <p className="mt-2 text-[#7a9abd]">
-              Open the file first, check it, then approve or reject.
+              Open identity file and selfie photo first, then approve or reject.
             </p>
 
             <label className="mt-6 mb-2 block text-sm font-semibold text-[#4e6880]">
               Admin Note Optional
             </label>
+
             <textarea
               value={adminNote}
               onChange={(e) => setAdminNote(e.target.value)}
-              placeholder="Example: Document verified successfully."
+              placeholder="Example: Identity document and selfie verified successfully."
               rows={3}
               className="w-full rounded-xl border border-[#172036] bg-[#0b0f1c] px-4 py-3 outline-none"
             />
 
             <div className="mt-6 overflow-x-auto">
-              <table className="w-full min-w-[900px] border-collapse text-left">
+              <table className="w-full min-w-[1100px] border-collapse text-left">
                 <thead>
                   <tr className="border-b border-[#172036] text-sm text-[#4e6880]">
                     <th className="py-3">User ID</th>
                     <th className="py-3">Document Type</th>
                     <th className="py-3">Status</th>
                     <th className="py-3">Date</th>
-                    <th className="py-3">File</th>
+                    <th className="py-3">Identity File</th>
+                    <th className="py-3">Selfie Photo</th>
                     <th className="py-3">Actions</th>
                   </tr>
                 </thead>
@@ -280,9 +335,11 @@ export default function AdminKycPage() {
                       <td className="max-w-[220px] truncate py-4 text-[#7a9abd]">
                         {document.user_id}
                       </td>
+
                       <td className="py-4 font-semibold">
                         {document.document_type}
                       </td>
+
                       <td className="py-4">
                         <span
                           className={`rounded-full px-3 py-1 text-sm ${statusBadge(
@@ -292,17 +349,36 @@ export default function AdminKycPage() {
                           {document.status}
                         </span>
                       </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {new Date(document.created_at).toLocaleString()}
                       </td>
+
                       <td className="py-4">
                         <button
-                          onClick={() => openKycFile(document.file_url)}
+                          onClick={() => openIdentityFile(document)}
                           className="rounded-lg bg-[#172036] px-3 py-2 text-sm text-[#7a9abd]"
                         >
-                          View File
+                          View Identity
                         </button>
                       </td>
+
+                      <td className="py-4">
+                        {document.selfie_file_path ||
+                        document.selfie_photo_url ? (
+                          <button
+                            onClick={() => openSelfieFile(document)}
+                            className="rounded-lg bg-[#172036] px-3 py-2 text-sm text-[#7a9abd]"
+                          >
+                            View Selfie
+                          </button>
+                        ) : (
+                          <span className="text-sm text-[#4e6880]">
+                            No selfie
+                          </span>
+                        )}
+                      </td>
+
                       <td className="space-x-2 py-4">
                         <button
                           onClick={() => approveKyc(document.id)}
@@ -327,8 +403,11 @@ export default function AdminKycPage() {
 
                   {pendingKyc.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="py-6 text-center text-[#7a9abd]">
-                        No pending KYC documents.
+                      <td
+                        colSpan={7}
+                        className="py-6 text-center text-[#7a9abd]"
+                      >
+                        No pending KYC submissions.
                       </td>
                     </tr>
                   )}
@@ -338,10 +417,10 @@ export default function AdminKycPage() {
           </div>
 
           <div className="mt-8 rounded-2xl border border-[#172036] bg-[#0e1526] p-6 lg:p-8">
-            <h2 className="text-2xl font-bold">Reviewed KYC Documents</h2>
+            <h2 className="text-2xl font-bold">Reviewed KYC Submissions</h2>
 
             <div className="mt-6 overflow-x-auto">
-              <table className="w-full min-w-[900px] border-collapse text-left">
+              <table className="w-full min-w-[1100px] border-collapse text-left">
                 <thead>
                   <tr className="border-b border-[#172036] text-sm text-[#4e6880]">
                     <th className="py-3">User ID</th>
@@ -349,7 +428,8 @@ export default function AdminKycPage() {
                     <th className="py-3">Status</th>
                     <th className="py-3">Admin Note</th>
                     <th className="py-3">Date</th>
-                    <th className="py-3">File</th>
+                    <th className="py-3">Identity File</th>
+                    <th className="py-3">Selfie Photo</th>
                   </tr>
                 </thead>
 
@@ -359,9 +439,11 @@ export default function AdminKycPage() {
                       <td className="max-w-[220px] truncate py-4 text-[#7a9abd]">
                         {document.user_id}
                       </td>
+
                       <td className="py-4 font-semibold">
                         {document.document_type}
                       </td>
+
                       <td className="py-4">
                         <span
                           className={`rounded-full px-3 py-1 text-sm ${statusBadge(
@@ -371,27 +453,49 @@ export default function AdminKycPage() {
                           {document.status}
                         </span>
                       </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {document.admin_note || "-"}
                       </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {new Date(document.created_at).toLocaleString()}
                       </td>
+
                       <td className="py-4">
                         <button
-                          onClick={() => openKycFile(document.file_url)}
+                          onClick={() => openIdentityFile(document)}
                           className="rounded-lg bg-[#172036] px-3 py-2 text-sm text-[#7a9abd]"
                         >
-                          View File
+                          View Identity
                         </button>
+                      </td>
+
+                      <td className="py-4">
+                        {document.selfie_file_path ||
+                        document.selfie_photo_url ? (
+                          <button
+                            onClick={() => openSelfieFile(document)}
+                            className="rounded-lg bg-[#172036] px-3 py-2 text-sm text-[#7a9abd]"
+                          >
+                            View Selfie
+                          </button>
+                        ) : (
+                          <span className="text-sm text-[#4e6880]">
+                            No selfie
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}
 
                   {reviewedKyc.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="py-6 text-center text-[#7a9abd]">
-                        No reviewed KYC documents yet.
+                      <td
+                        colSpan={7}
+                        className="py-6 text-center text-[#7a9abd]"
+                      >
+                        No reviewed KYC submissions yet.
                       </td>
                     </tr>
                   )}

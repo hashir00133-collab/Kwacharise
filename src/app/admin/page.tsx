@@ -13,7 +13,7 @@ type DepositRequest = {
   sender_phone: string | null;
   transaction_reference: string | null;
   payment_screenshot_url: string | null;
-  status: "pending" | "approved" | "rejected" | "cancelled" | "paid" | "completed";
+  status: string;
   admin_note: string | null;
   created_at: string;
 };
@@ -25,7 +25,7 @@ type WithdrawalRequest = {
   withdrawal_method: string;
   account_name: string | null;
   account_number_or_wallet: string;
-  status: "pending" | "approved" | "rejected" | "cancelled" | "paid" | "completed";
+  status: string;
   admin_note: string | null;
   processed_reference: string | null;
   created_at: string;
@@ -50,10 +50,13 @@ export default function AdminPage() {
 
   useEffect(() => {
     checkAdminAndLoadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function checkAdminAndLoadData() {
     setLoading(true);
+    setErrorMessage("");
+    setMessage("");
 
     const {
       data: { user },
@@ -66,7 +69,7 @@ export default function AdminPage() {
 
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
-      .select("role")
+      .select("role, status")
       .eq("id", user.id)
       .single();
 
@@ -76,6 +79,11 @@ export default function AdminPage() {
       (profile.role !== "admin" && profile.role !== "super_admin")
     ) {
       router.push("/dashboard");
+      return;
+    }
+
+    if (profile.status === "blocked" || profile.status === "suspended") {
+      router.push("/login");
       return;
     }
 
@@ -96,7 +104,7 @@ export default function AdminPage() {
       return;
     }
 
-    setDeposits(data || []);
+    setDeposits((data || []) as DepositRequest[]);
   }
 
   async function loadWithdrawals() {
@@ -110,7 +118,14 @@ export default function AdminPage() {
       return;
     }
 
-    setWithdrawals(data || []);
+    setWithdrawals((data || []) as WithdrawalRequest[]);
+  }
+
+  async function refreshPageData() {
+    setErrorMessage("");
+    setMessage("");
+    await loadDeposits();
+    await loadWithdrawals();
   }
 
   async function approveDeposit(depositId: string) {
@@ -118,21 +133,61 @@ export default function AdminPage() {
     setErrorMessage("");
     setActionLoadingId(`deposit-${depositId}`);
 
-    const { error } = await supabase.rpc("approve_deposit_request", {
+    const { error } = await supabase.rpc("admin_approve_deposit_v2", {
       p_deposit_id: depositId,
-      p_admin_note: depositAdminNote || null,
+      p_admin_note: depositAdminNote.trim() || "Payment verified successfully.",
     });
 
-    setActionLoadingId(null);
-
     if (error) {
+      setActionLoadingId(null);
       setErrorMessage(error.message);
       return;
     }
 
+    let whatsappMessage =
+      " WhatsApp notification was also processed successfully.";
+
+    try {
+      const notificationResponse = await fetch(
+        "/api/notifications/deposit-approved",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            depositId,
+          }),
+        }
+      );
+
+      const notificationData = await notificationResponse
+        .json()
+        .catch(() => null);
+
+      if (!notificationResponse.ok || notificationData?.success === false) {
+        whatsappMessage = ` Deposit approved, but WhatsApp notification failed: ${
+          notificationData?.error || "Unknown notification error."
+        }`;
+      } else if (notificationData?.result?.skipped) {
+        whatsappMessage = ` Deposit approved, but WhatsApp notification was skipped: ${
+          notificationData.result.reason || "Member is not eligible for WhatsApp."
+        }`;
+      }
+    } catch (notificationError) {
+      whatsappMessage = ` Deposit approved, but WhatsApp notification failed: ${
+        notificationError instanceof Error
+          ? notificationError.message
+          : "Unknown notification error."
+      }`;
+    }
+
+    setActionLoadingId(null);
     setDepositAdminNote("");
-    setMessage("Deposit approved successfully.");
+    setMessage(`Deposit approved successfully.${whatsappMessage}`);
+
     await loadDeposits();
+    await loadWithdrawals();
   }
 
   async function rejectDeposit(depositId: string) {
@@ -140,9 +195,9 @@ export default function AdminPage() {
     setErrorMessage("");
     setActionLoadingId(`deposit-${depositId}`);
 
-    const { error } = await supabase.rpc("reject_deposit_request", {
+    const { error } = await supabase.rpc("admin_reject_deposit_v2", {
       p_deposit_id: depositId,
-      p_admin_note: depositAdminNote || "Deposit rejected by admin.",
+      p_admin_note: depositAdminNote.trim() || "Deposit rejected by admin.",
     });
 
     setActionLoadingId(null);
@@ -154,7 +209,9 @@ export default function AdminPage() {
 
     setDepositAdminNote("");
     setMessage("Deposit rejected successfully.");
+
     await loadDeposits();
+    await loadWithdrawals();
   }
 
   async function approveWithdrawal(withdrawalId: string) {
@@ -164,8 +221,9 @@ export default function AdminPage() {
 
     const { error } = await supabase.rpc("approve_withdrawal_request", {
       p_withdrawal_id: withdrawalId,
-      p_processed_reference: processedReference || null,
-      p_admin_note: withdrawalAdminNote || null,
+      p_processed_reference: processedReference.trim() || "Paid by admin.",
+      p_admin_note:
+        withdrawalAdminNote.trim() || "Withdrawal approved by admin.",
     });
 
     setActionLoadingId(null);
@@ -179,6 +237,7 @@ export default function AdminPage() {
     setProcessedReference("");
     setMessage("Withdrawal approved successfully.");
 
+    await loadDeposits();
     await loadWithdrawals();
   }
 
@@ -189,7 +248,8 @@ export default function AdminPage() {
 
     const { error } = await supabase.rpc("reject_withdrawal_request", {
       p_withdrawal_id: withdrawalId,
-      p_admin_note: withdrawalAdminNote || "Withdrawal rejected by admin.",
+      p_admin_note:
+        withdrawalAdminNote.trim() || "Withdrawal rejected by admin.",
     });
 
     setActionLoadingId(null);
@@ -203,10 +263,13 @@ export default function AdminPage() {
     setProcessedReference("");
     setMessage("Withdrawal rejected successfully.");
 
+    await loadDeposits();
     await loadWithdrawals();
   }
 
   async function openPaymentProof(filePath: string | null) {
+    setErrorMessage("");
+
     if (!filePath) {
       setErrorMessage("No payment screenshot found for this deposit.");
       return;
@@ -229,6 +292,23 @@ export default function AdminPage() {
     router.push("/login");
   }
 
+  function statusBadge(status: string) {
+    if (
+      status === "approved" ||
+      status === "completed" ||
+      status === "paid" ||
+      status === "matured"
+    ) {
+      return "bg-green-500/10 text-green-400";
+    }
+
+    if (status === "rejected" || status === "cancelled") {
+      return "bg-red-500/10 text-red-400";
+    }
+
+    return "bg-yellow-500/10 text-yellow-400";
+  }
+
   if (loading) {
     return (
       <main className="min-h-screen bg-[#07090f] p-8 text-[#dde2ef]">
@@ -237,12 +317,18 @@ export default function AdminPage() {
     );
   }
 
-  const pendingDeposits = deposits.filter((deposit) => deposit.status === "pending");
-  const reviewedDeposits = deposits.filter((deposit) => deposit.status !== "pending");
+  const pendingDeposits = deposits.filter(
+    (deposit) => deposit.status === "pending"
+  );
+
+  const reviewedDeposits = deposits.filter(
+    (deposit) => deposit.status !== "pending"
+  );
 
   const pendingWithdrawals = withdrawals.filter(
     (withdrawal) => withdrawal.status === "pending"
   );
+
   const reviewedWithdrawals = withdrawals.filter(
     (withdrawal) => withdrawal.status !== "pending"
   );
@@ -261,17 +347,38 @@ export default function AdminPage() {
           <div className="mb-8 rounded-2xl border border-[#00b86b33] bg-[#00b86b18] p-5">
             <h2 className="font-bold text-[#00b86b]">Admin Panel</h2>
             <p className="mt-2 text-sm text-[#7a9abd]">
-              Review deposits and withdrawals
+              Review deposits, withdrawals, support, and pairings.
             </p>
           </div>
 
           <nav className="space-y-3 text-[#7a9abd]">
             <a className="block rounded-xl bg-[#172036] px-4 py-3 text-[#00b86b]">
-              Admin Controls
+              Admin Dashboard
             </a>
+
+            <a href="/admin/kyc" className="block rounded-xl px-4 py-3">
+              KYC Management
+            </a>
+
+            <a href="/admin/pairing" className="block rounded-xl px-4 py-3">
+              Pairing System
+            </a>
+
+            <a href="/admin/support" className="block rounded-xl px-4 py-3">
+              Support Tickets
+            </a>
+
+            <a
+              href="/admin/password-reset"
+              className="block rounded-xl px-4 py-3"
+            >
+              Password Reset
+            </a>
+
             <a href="/dashboard" className="block rounded-xl px-4 py-3">
               Member Dashboard
             </a>
+
             <a href="/superadmin" className="block rounded-xl px-4 py-3">
               Super Admin Dashboard
             </a>
@@ -286,12 +393,24 @@ export default function AdminPage() {
         </aside>
 
         <section className="p-6 lg:p-10">
-          <h1 className="text-4xl font-extrabold lg:text-5xl">
-            Admin Dashboard
-          </h1>
-          <p className="mt-3 text-lg text-[#7a9abd]">
-            Approve or reject member deposits and withdrawals.
-          </p>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h1 className="text-4xl font-extrabold lg:text-5xl">
+                Admin Dashboard
+              </h1>
+
+              <p className="mt-3 text-lg text-[#7a9abd]">
+                Approve or reject member deposits and withdrawals.
+              </p>
+            </div>
+
+            <button
+              onClick={refreshPageData}
+              className="rounded-xl border border-[#172036] bg-[#0e1526] px-5 py-3 text-sm font-semibold text-[#7a9abd]"
+            >
+              Refresh Data
+            </button>
+          </div>
 
           {errorMessage && (
             <p className="mt-6 rounded-lg bg-red-500/10 px-4 py-3 text-sm text-red-400">
@@ -335,9 +454,48 @@ export default function AdminPage() {
             </div>
           </div>
 
-          {/* DEPOSIT APPROVALS */}
+          <div className="mt-8 rounded-2xl border border-[#172036] bg-[#0e1526] p-6 lg:p-8">
+            <h2 className="text-2xl font-bold">Admin Quick Actions</h2>
+
+            <p className="mt-2 text-[#7a9abd]">
+              Open admin tools for KYC, pairing, support tickets, and password
+              reset.
+            </p>
+
+            <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <a
+                href="/admin/kyc"
+                className="rounded-xl border border-[#172036] bg-[#0b0f1c] px-5 py-4 text-center font-semibold text-[#7a9abd]"
+              >
+                KYC Management
+              </a>
+
+              <a
+                href="/admin/pairing"
+                className="rounded-xl border border-[#172036] bg-[#0b0f1c] px-5 py-4 text-center font-semibold text-[#7a9abd]"
+              >
+                Pairing System
+              </a>
+
+              <a
+                href="/admin/support"
+                className="rounded-xl border border-[#172036] bg-[#0b0f1c] px-5 py-4 text-center font-semibold text-[#7a9abd]"
+              >
+                Support Tickets
+              </a>
+
+              <a
+                href="/admin/password-reset"
+                className="rounded-xl border border-[#172036] bg-[#0b0f1c] px-5 py-4 text-center font-semibold text-[#7a9abd]"
+              >
+                Password Reset
+              </a>
+            </div>
+          </div>
+
           <div className="mt-8 rounded-2xl border border-[#172036] bg-[#0e1526] p-6 lg:p-8">
             <h2 className="text-2xl font-bold">Pending Deposits</h2>
+
             <p className="mt-2 text-[#7a9abd]">
               Review payment proof before approving deposits.
             </p>
@@ -345,6 +503,7 @@ export default function AdminPage() {
             <label className="mt-6 mb-2 block text-sm font-semibold text-[#4e6880]">
               Deposit Admin Note Optional
             </label>
+
             <textarea
               value={depositAdminNote}
               onChange={(e) => setDepositAdminNote(e.target.value)}
@@ -373,18 +532,26 @@ export default function AdminPage() {
                       <td className="py-4 font-semibold">
                         {deposit.sender_name || "Unknown"}
                       </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {deposit.sender_phone || "-"}
                       </td>
-                      <td className="py-4 font-bold">{deposit.amount}</td>
+
+                      <td className="py-4 font-bold">
+                        {Number(deposit.amount || 0).toFixed(2)}
+                      </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {deposit.transaction_reference || "-"}
                       </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {new Date(deposit.created_at).toLocaleString()}
                       </td>
+
                       <td className="py-4">
                         <button
+                          type="button"
                           onClick={() =>
                             openPaymentProof(deposit.payment_screenshot_url)
                           }
@@ -393,8 +560,10 @@ export default function AdminPage() {
                           View Proof
                         </button>
                       </td>
+
                       <td className="space-x-2 py-4">
                         <button
+                          type="button"
                           onClick={() => approveDeposit(deposit.id)}
                           disabled={actionLoadingId === `deposit-${deposit.id}`}
                           className="rounded-lg bg-[#00b86b] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
@@ -405,6 +574,7 @@ export default function AdminPage() {
                         </button>
 
                         <button
+                          type="button"
                           onClick={() => rejectDeposit(deposit.id)}
                           disabled={actionLoadingId === `deposit-${deposit.id}`}
                           className="rounded-lg bg-red-500/20 px-3 py-2 text-sm font-semibold text-red-400 disabled:opacity-60"
@@ -417,7 +587,10 @@ export default function AdminPage() {
 
                   {pendingDeposits.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="py-6 text-center text-[#7a9abd]">
+                      <td
+                        colSpan={7}
+                        className="py-6 text-center text-[#7a9abd]"
+                      >
                         No pending deposits.
                       </td>
                     </tr>
@@ -427,9 +600,9 @@ export default function AdminPage() {
             </div>
           </div>
 
-          {/* WITHDRAWAL APPROVALS */}
           <div className="mt-8 rounded-2xl border border-[#172036] bg-[#0e1526] p-6 lg:p-8">
             <h2 className="text-2xl font-bold">Pending Withdrawals</h2>
+
             <p className="mt-2 text-[#7a9abd]">
               Review withdrawal details before approving payment.
             </p>
@@ -439,6 +612,7 @@ export default function AdminPage() {
                 <label className="mb-2 block text-sm font-semibold text-[#4e6880]">
                   Processed Reference Optional
                 </label>
+
                 <input
                   value={processedReference}
                   onChange={(e) => setProcessedReference(e.target.value)}
@@ -451,6 +625,7 @@ export default function AdminPage() {
                 <label className="mb-2 block text-sm font-semibold text-[#4e6880]">
                   Withdrawal Admin Note Optional
                 </label>
+
                 <input
                   value={withdrawalAdminNote}
                   onChange={(e) => setWithdrawalAdminNote(e.target.value)}
@@ -475,22 +650,33 @@ export default function AdminPage() {
 
                 <tbody>
                   {pendingWithdrawals.map((withdrawal) => (
-                    <tr key={withdrawal.id} className="border-b border-[#172036]">
+                    <tr
+                      key={withdrawal.id}
+                      className="border-b border-[#172036]"
+                    >
                       <td className="py-4 font-semibold">
                         {withdrawal.account_name || "Unknown"}
                       </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {withdrawal.withdrawal_method}
                       </td>
+
                       <td className="max-w-[300px] truncate py-4 text-[#7a9abd]">
                         {withdrawal.account_number_or_wallet}
                       </td>
-                      <td className="py-4 font-bold">{withdrawal.amount}</td>
+
+                      <td className="py-4 font-bold">
+                        {Number(withdrawal.amount || 0).toFixed(2)}
+                      </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {new Date(withdrawal.created_at).toLocaleString()}
                       </td>
+
                       <td className="space-x-2 py-4">
                         <button
+                          type="button"
                           onClick={() => approveWithdrawal(withdrawal.id)}
                           disabled={
                             actionLoadingId === `withdrawal-${withdrawal.id}`
@@ -503,6 +689,7 @@ export default function AdminPage() {
                         </button>
 
                         <button
+                          type="button"
                           onClick={() => rejectWithdrawal(withdrawal.id)}
                           disabled={
                             actionLoadingId === `withdrawal-${withdrawal.id}`
@@ -517,7 +704,10 @@ export default function AdminPage() {
 
                   {pendingWithdrawals.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="py-6 text-center text-[#7a9abd]">
+                      <td
+                        colSpan={6}
+                        className="py-6 text-center text-[#7a9abd]"
+                      >
                         No pending withdrawals.
                       </td>
                     </tr>
@@ -527,7 +717,6 @@ export default function AdminPage() {
             </div>
           </div>
 
-          {/* REVIEWED DEPOSITS */}
           <div className="mt-8 rounded-2xl border border-[#172036] bg-[#0e1526] p-6 lg:p-8">
             <h2 className="text-2xl font-bold">Reviewed Deposits</h2>
 
@@ -549,21 +738,25 @@ export default function AdminPage() {
                       <td className="py-4 font-semibold">
                         {deposit.sender_name || "Unknown"}
                       </td>
-                      <td className="py-4">{deposit.amount}</td>
+
+                      <td className="py-4">
+                        {Number(deposit.amount || 0).toFixed(2)}
+                      </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {deposit.transaction_reference || "-"}
                       </td>
+
                       <td className="py-4">
-                        {deposit.status === "approved" ? (
-                          <span className="rounded-full bg-green-500/10 px-3 py-1 text-sm text-green-400">
-                            Approved
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-red-500/10 px-3 py-1 text-sm text-red-400">
-                            {deposit.status}
-                          </span>
-                        )}
+                        <span
+                          className={`rounded-full px-3 py-1 text-sm ${statusBadge(
+                            deposit.status
+                          )}`}
+                        >
+                          {deposit.status}
+                        </span>
                       </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {new Date(deposit.created_at).toLocaleString()}
                       </td>
@@ -572,7 +765,10 @@ export default function AdminPage() {
 
                   {reviewedDeposits.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="py-6 text-center text-[#7a9abd]">
+                      <td
+                        colSpan={5}
+                        className="py-6 text-center text-[#7a9abd]"
+                      >
                         No reviewed deposits yet.
                       </td>
                     </tr>
@@ -582,7 +778,6 @@ export default function AdminPage() {
             </div>
           </div>
 
-          {/* REVIEWED WITHDRAWALS */}
           <div className="mt-8 rounded-2xl border border-[#172036] bg-[#0e1526] p-6 lg:p-8">
             <h2 className="text-2xl font-bold">Reviewed Withdrawals</h2>
 
@@ -602,31 +797,40 @@ export default function AdminPage() {
 
                 <tbody>
                   {reviewedWithdrawals.map((withdrawal) => (
-                    <tr key={withdrawal.id} className="border-b border-[#172036]">
+                    <tr
+                      key={withdrawal.id}
+                      className="border-b border-[#172036]"
+                    >
                       <td className="py-4 font-semibold">
                         {withdrawal.account_name || "Unknown"}
                       </td>
-                      <td className="py-4">{withdrawal.amount}</td>
+
+                      <td className="py-4">
+                        {Number(withdrawal.amount || 0).toFixed(2)}
+                      </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {withdrawal.withdrawal_method}
                       </td>
+
                       <td className="max-w-[250px] truncate py-4 text-[#7a9abd]">
                         {withdrawal.account_number_or_wallet}
                       </td>
+
                       <td className="py-4">
-                        {withdrawal.status === "approved" ? (
-                          <span className="rounded-full bg-green-500/10 px-3 py-1 text-sm text-green-400">
-                            Approved
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-red-500/10 px-3 py-1 text-sm text-red-400">
-                            {withdrawal.status}
-                          </span>
-                        )}
+                        <span
+                          className={`rounded-full px-3 py-1 text-sm ${statusBadge(
+                            withdrawal.status
+                          )}`}
+                        >
+                          {withdrawal.status}
+                        </span>
                       </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {withdrawal.processed_reference || "-"}
                       </td>
+
                       <td className="py-4 text-[#7a9abd]">
                         {new Date(withdrawal.created_at).toLocaleString()}
                       </td>
@@ -635,7 +839,10 @@ export default function AdminPage() {
 
                   {reviewedWithdrawals.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="py-6 text-center text-[#7a9abd]">
+                      <td
+                        colSpan={7}
+                        className="py-6 text-center text-[#7a9abd]"
+                      >
                         No reviewed withdrawals yet.
                       </td>
                     </tr>
