@@ -51,6 +51,7 @@ export default function LoginPage() {
     }
 
     if (profile.status === "blocked" || profile.status === "suspended") {
+      await supabase.auth.signOut();
       setErrorMessage("Your account is not active. Please contact support.");
       return;
     }
@@ -79,6 +80,7 @@ export default function LoginPage() {
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#00b86b] font-bold text-white">
               K
             </div>
+
             <h1 className="text-2xl font-extrabold">Sign In</h1>
           </div>
 
@@ -86,22 +88,35 @@ export default function LoginPage() {
             <label className="mb-2 block text-sm font-semibold text-[#4e6880]">
               Email Address
             </label>
+
             <input
               type="email"
               placeholder="you@email.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email"
               className="mb-4 w-full rounded-xl border border-[#172036] bg-[#0b0f1c] px-4 py-3 text-[#dde2ef] outline-none"
             />
 
-            <label className="mb-2 block text-sm font-semibold text-[#4e6880]">
-              Password
-            </label>
+            <div className="mb-2 flex items-center justify-between">
+              <label className="block text-sm font-semibold text-[#4e6880]">
+                Password
+              </label>
+
+              <a
+                href="/forgot-password"
+                className="text-sm font-semibold text-[#00b86b] hover:underline"
+              >
+                Forgot password?
+              </a>
+            </div>
+
             <input
               type="password"
               placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
               className="mb-6 w-full rounded-xl border border-[#172036] bg-[#0b0f1c] px-4 py-3 text-[#dde2ef] outline-none"
             />
 
@@ -114,7 +129,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="block w-full rounded-xl bg-[#00b86b] px-5 py-3 text-center font-semibold text-white disabled:opacity-60"
+              className="block w-full rounded-xl bg-[#00b86b] px-5 py-3 text-center font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? "Signing In..." : "Sign In →"}
             </button>
